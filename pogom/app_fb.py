@@ -258,14 +258,14 @@ class PogomFb(Pogom):
                 pokemon_name = msg.split('byebye')[1].strip()
                 pokemon_id = get_pokemon_id(pokemon_name)
                 if pokemon_id:
-                    response_msg = self._unsubscribe_pokemon(sender_id, int(pokemon_id))
+                    response_msg = self._unsubscribe_pokemon(sender_id, pokemon_id)
             else:
                 criteria = self._parse_pokemon_subscription_msg(msg)
                 pokemon_name = criteria.get('name')
                 pokemon_id = get_pokemon_id(pokemon_name)
                 if pokemon_id:
                     criteria.pop('name')
-                    response_msg = self._subscribe_pokemon(sender_id, int(pokemon_id), criteria)
+                    response_msg = self._subscribe_pokemon(sender_id, pokemon_id, criteria)
             if not response_msg:
                 response_msg = u"wat's {0}".format(pokemon_name)
         elif msg.startswith('what did i say'):
