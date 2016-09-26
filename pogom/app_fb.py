@@ -2,7 +2,7 @@
 from __future__ import division
 from . import config
 from .app import Pogom
-from .utils import get_pokemon_id, get_pokemon_names, get_pokemon_name
+from .utils import get_pokemon_id, get_pokemon_names, get_pokemon_name, get_move_id
 from flask import request
 from pytz import timezone
 from datetime import datetime
@@ -11,6 +11,7 @@ import logging
 import requests
 import json
 import os
+import re
 
 log = logging.getLogger(__name__)
 log.setLevel(level=10)
@@ -60,10 +61,10 @@ class PogomFb(Pogom):
                                     lat=coord["lat"], lng=coord["long"])
         return "ok", 200
 
-    def notify(self, pokemon_list):
+    def notify(self, found_pokemons):
         for recipient, subscriber_info in self._fb_subscribers.iteritems():
             notify_when_found = subscriber_info['subscription']
-            for msg, map_link in self._generate_notify_msg(recipient, notify_when_found, pokemon_list):
+            for msg, map_link in self._generate_notify_msg(recipient, notify_when_found, found_pokemons):
                 r = requests.get(map_link, stream=True)
                 if r.status_code == 200:
                     r.raw.decode_content = True
@@ -83,45 +84,67 @@ class PogomFb(Pogom):
     def _get_timestamp(self, dt):
         return (dt - datetime(1970, 1, 1)).total_seconds()
 
-    def _generate_notify_msg(self, recipient, notify_list, pokemon_list):
-        for m in pokemon_list:
+    def _is_criteria_matched(self, recipient, pokemon_id, iv, move_1, move_2):
+        criteria = self._fb_subscribers[recipient]['additional_criteria']
+        if pokemon_id in criteria:
+            criteria = criteria[pokemon_id]
+        else:
+            return True
+        move1, move2 = get_move_id(move_1), get_move_id(move_2)
+        res = True
+        if criteria.get('iv') and iv:
+            res = res and (iv >= criteria.get('iv'))
+        if criteria.get('move1') and move1:
+            res = res and (criteria.get('move1') == move1)
+        if criteria.get('move2') and move2:
+            res = res and (criteria.get('move2') == move2)
+        return res
+
+    def _generate_notify_msg(self, recipient, notify_list, found_pokemons):
+        for m in found_pokemons:
             if m["pokemon_id"] not in notify_list:
                 continue
-            if m["encounter_id"] not in self._fb_noti_history[recipient]:
-                # normalize time
-                disappear_ts = self._get_timestamp(m['disappear_time'])
-                self._fb_noti_history[recipient][m["encounter_id"]] = disappear_ts
-                local_time = datetime.fromtimestamp(disappear_ts, self._timezone)
-                exp_ctime = "{h:0>2}:{m:0>2}:{s:0>2}".format(
-                    h=local_time.hour, m=local_time.minute,
-                    s=local_time.second)
-                msg = [
-                    u"野生的 {pokemon_name} 出現了!",
-                    u"消失於: {ctime}"
-                ]
-                move_1, move_2 = m.get('move_1', ''), m.get('move_2', '')
-                atk, dfn, sta = (
-                    m.get('individual_attack', 0),
-                    m.get('individual_defense', 0),
-                    m.get('individual_stamina', 0)
-                )
-                if all((move_1, move_2)):
-                    msg.append(u'{m1}/{m2}'.format(
-                        m1=move_1, m2=move_2
-                    ))
-                if any((atk, dfn, sta)):
-                    iv = 100 * (atk + dfn + sta) / 45.0
-                    msg.append(u'IV: {iv:0.2f}%'.format(iv=iv))
-                    msg.append(u'攻: {atk}, 防: {dfn}, 耐: {sta}'.format(atk=atk, dfn=dfn, sta=sta))
-                msg = u"\n".join(msg)
-                msg = msg.format(
-                    pokemon_name=m['pokemon_name'],
-                    ctime=exp_ctime
-                )
-                yield (
-                    msg,
-                    self._get_map_snippet(longitude=m['longitude'], latitude=m['latitude'])
-                )
+
+            move_1, move_2 = m.get('move_1', ''), m.get('move_2', '')
+            atk, dfn, sta = (
+                m.get('individual_attack', 0),
+                m.get('individual_defense', 0),
+                m.get('individual_stamina', 0)
+            )
+            iv = 100 * (atk + dfn + sta) / 45.0 if any((atk, dfn, sta)) else 0
+            if not self._is_criteria_matched(recipient, m["pokemon_id"], iv, move_1, move_2):
+                continue
+            if m["encounter_id"] in self._fb_noti_history[recipient]:
+                continue
+            # normalize time
+            disappear_ts = self._get_timestamp(m['disappear_time'])
+            self._fb_noti_history[recipient][m["encounter_id"]] = disappear_ts
+            local_time = datetime.fromtimestamp(disappear_ts, self._timezone)
+            exp_ctime = "{h:0>2}:{m:0>2}:{s:0>2}".format(
+                h=local_time.hour, m=local_time.minute,
+                s=local_time.second)
+            msg = [
+                u"野生的 {pokemon_name} 出現了!",
+                u"消失於: {ctime}"
+            ]
+
+            if all((move_1, move_2)):
+                msg.append(u'{m1}/{m2}'.format(
+                    m1=move_1, m2=move_2
+                ))
+
+            if iv:
+                msg.append(u'IV: {iv:0.2f}%'.format(iv=iv))
+                msg.append(u'攻: {atk}, 防: {dfn}, 耐: {sta}'.format(atk=atk, dfn=dfn, sta=sta))
+            msg = u"\n".join(msg)
+            msg = msg.format(
+                pokemon_name=m['pokemon_name'],
+                ctime=exp_ctime
+            )
+            yield (
+                msg,
+                self._get_map_snippet(longitude=m['longitude'], latitude=m['latitude'])
+            )
 
     def _clear_expired_entries_from_history(self):
         pass
@@ -133,20 +156,47 @@ class PogomFb(Pogom):
     def _init_subscriber(self, s_id):
         self._fb_subscribers[s_id] = {}
         self._fb_subscribers[s_id]['subscription'] = []
+        self._fb_subscribers[s_id]['additional_criteria'] = {}
         self._fb_subscribers[s_id]['recon'] = None
         self._fb_noti_history[s_id] = {}
 
-    def _subscribe_pokemon(self, s_id, pokemon_id):
+    def _subscribe_pokemon(self, s_id, pokemon_id, additional_criteria=None):
+        """
+        additional_criteria: {'iv':0, 'move_1':'00', blahblah}
+        """
+        if pokemon_id in self._fb_subscribers[s_id]['subscription'] and additional_criteria in (None, {}):
+            return "u said"
+
         if pokemon_id not in self._fb_subscribers[s_id]['subscription']:
             self._fb_subscribers[s_id]['subscription'].append(pokemon_id)
-            self._save_subscriber()
-            return "sure bro"
-        else:
-            return "u said"
+        ret_msg = 'sure bro'
+        if additional_criteria:
+            criteria = {}
+            iv = additional_criteria.get('iv')
+            move1 = additional_criteria.get('move1', '')
+            move2 = additional_criteria.get('move2', '')
+            try:
+                criteria['iv'] = float(iv)
+            except Exception as e:
+                criteria['iv'] = -1
+            ret_msg += ', u r asking iv over ' + str(criteria['iv'])
+            mid1, mid2 = get_move_id(move1), get_move_id(move2)
+            if mid1:
+                criteria['move1'] = mid1
+                ret_msg += ', move 1 is ' + move1
+            if mid2:
+                criteria['move2'] = mid2
+                ret_msg += ', move 2 is ' + move2
+
+            self._fb_subscribers[s_id]['additional_criteria'][pokemon_id] = criteria
+        self._save_subscriber()
+        return ret_msg
 
     def _unsubscribe_pokemon(self, s_id, pokemon_id):
         if pokemon_id in self._fb_subscribers[s_id]['subscription']:
             self._fb_subscribers[s_id]['subscription'].remove(pokemon_id)
+            if pokemon_id in self._fb_subscribers[s_id]['additional_criteria']:
+                self._fb_subscribers[s_id]['additional_criteria'].pop(pokemon_id)
             self._save_subscriber()
             return "If this is what you want..."
         else:
@@ -203,18 +253,20 @@ class PogomFb(Pogom):
         elif msg.startswith('byebye') or msg.startswith('tell me about'):
             if sender_id not in self._fb_subscribers:
                 self._init_subscriber(sender_id)
+            response_msg = ''
             if 'byebye' in msg:
-                splitter = 'byebye'
-                func = self._unsubscribe_pokemon
+                pokemon_name = msg.split('byebye')[1].strip()
+                pokemon_id = get_pokemon_id(pokemon_name)
+                if pokemon_id:
+                    response_msg = self._unsubscribe_pokemon(sender_id, int(pokemon_id))
             else:
-                splitter = 'tell me about'
-                func = self._subscribe_pokemon
-            pokemon_name = msg.split(splitter)[1].strip()
-            pokemon_id = get_pokemon_id(pokemon_name)
-            if pokemon_id:
-                pokemon_id = int(pokemon_id)
-                response_msg = func(sender_id, pokemon_id)
-            else:
+                criteria = self._parse_pokemon_subscription_msg(msg)
+                pokemon_name = criteria.get('name')
+                pokemon_id = get_pokemon_id(pokemon_name)
+                if pokemon_id:
+                    criteria.pop('name')
+                    response_msg = self._subscribe_pokemon(sender_id, int(pokemon_id), criteria)
+            if not response_msg:
                 response_msg = u"wat's {0}".format(pokemon_name)
         elif msg.startswith('what did i say'):
             response_msg = self._get_subscription_list(sender_id)
@@ -230,6 +282,16 @@ class PogomFb(Pogom):
             # for debug
             response_msg = str(self._fb_subscribers[sender_id])
         fb_send_message(sender_id, response_msg)
+
+    def _parse_pokemon_subscription_msg(self, msg):
+        msg_segs = re.split('if|and', msg, re.I | re.U)
+        pat = "tell me about (?P<name>.*)|iv over (?P<iv>[\d]*)|move1 is (?P<move1>.*)|move2 is (?P<move2>.*)"
+        criteria = {}
+        for seg in msg_segs:
+            res = re.search(pat, seg.strip(), re.I)
+            if res:
+                criteria.update({k: v for k, v in res.groupdict().iteritems() if v})
+        return criteria
 
 
 def fb_send_message(recipient_id, msg="", img_url="", img_tuple=None):
