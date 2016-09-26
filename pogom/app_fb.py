@@ -85,14 +85,20 @@ class PogomFb(Pogom):
         return (dt - datetime(1970, 1, 1)).total_seconds()
 
     def _is_criteria_matched(self, recipient, pokemon_id, iv, move_1, move_2):
-        criteria = self._fb_subscribers[recipient]['additional_criteria']['pokemon_id']
-        move1, move2 = get_move_id(move_1), get_move_id(move_2)
-        if all((
-                iv >= criteria.get('iv', -1),
-                criteria.get('move1') == move1,
-                criteria.get('move2') == move2)):
+        criteria = self._fb_subscribers[recipient]['additional_criteria']
+        if pokemon_id in criteria:
+            criteria = criteria[pokemon_id]
+        else:
             return True
-        return False
+        move1, move2 = get_move_id(move_1), get_move_id(move_2)
+        res = True
+        if criteria.get('iv') and iv:
+            res = res and (iv >= criteria.get('iv'))
+        if criteria.get('move1') and move1:
+            res = res and (criteria.get('move1') == move1)
+        if criteria.get('move2') and move2:
+            res = res and (criteria.get('move2') == move2)
+        return res
 
     def _generate_notify_msg(self, recipient, notify_list, found_pokemons):
         for m in found_pokemons:
@@ -106,39 +112,39 @@ class PogomFb(Pogom):
                 m.get('individual_stamina', 0)
             )
             iv = 100 * (atk + dfn + sta) / 45.0 if any((atk, dfn, sta)) else 0
-            if not self._is_criteria_matched(recipient, iv, move_1, move_2):
+            if not self._is_criteria_matched(recipient, m["pokemon_id"], iv, move_1, move_2):
                 continue
             if m["encounter_id"] in self._fb_noti_history[recipient]:
                 continue
-                # normalize time
-                disappear_ts = self._get_timestamp(m['disappear_time'])
-                self._fb_noti_history[recipient][m["encounter_id"]] = disappear_ts
-                local_time = datetime.fromtimestamp(disappear_ts, self._timezone)
-                exp_ctime = "{h:0>2}:{m:0>2}:{s:0>2}".format(
-                    h=local_time.hour, m=local_time.minute,
-                    s=local_time.second)
-                msg = [
-                    u"野生的 {pokemon_name} 出現了!",
-                    u"消失於: {ctime}"
-                ]
+            # normalize time
+            disappear_ts = self._get_timestamp(m['disappear_time'])
+            self._fb_noti_history[recipient][m["encounter_id"]] = disappear_ts
+            local_time = datetime.fromtimestamp(disappear_ts, self._timezone)
+            exp_ctime = "{h:0>2}:{m:0>2}:{s:0>2}".format(
+                h=local_time.hour, m=local_time.minute,
+                s=local_time.second)
+            msg = [
+                u"野生的 {pokemon_name} 出現了!",
+                u"消失於: {ctime}"
+            ]
 
-                if all((move_1, move_2)):
-                    msg.append(u'{m1}/{m2}'.format(
-                        m1=move_1, m2=move_2
-                    ))
+            if all((move_1, move_2)):
+                msg.append(u'{m1}/{m2}'.format(
+                    m1=move_1, m2=move_2
+                ))
 
-                if iv:
-                    msg.append(u'IV: {iv:0.2f}%'.format(iv=iv))
-                    msg.append(u'攻: {atk}, 防: {dfn}, 耐: {sta}'.format(atk=atk, dfn=dfn, sta=sta))
-                msg = u"\n".join(msg)
-                msg = msg.format(
-                    pokemon_name=m['pokemon_name'],
-                    ctime=exp_ctime
-                )
-                yield (
-                    msg,
-                    self._get_map_snippet(longitude=m['longitude'], latitude=m['latitude'])
-                )
+            if iv:
+                msg.append(u'IV: {iv:0.2f}%'.format(iv=iv))
+                msg.append(u'攻: {atk}, 防: {dfn}, 耐: {sta}'.format(atk=atk, dfn=dfn, sta=sta))
+            msg = u"\n".join(msg)
+            msg = msg.format(
+                pokemon_name=m['pokemon_name'],
+                ctime=exp_ctime
+            )
+            yield (
+                msg,
+                self._get_map_snippet(longitude=m['longitude'], latitude=m['latitude'])
+            )
 
     def _clear_expired_entries_from_history(self):
         pass
@@ -158,12 +164,12 @@ class PogomFb(Pogom):
         """
         additional_criteria: {'iv':0, 'move_1':'00', blahblah}
         """
-        if pokemon_id in self._fb_subscribers[s_id]['subscription'] and additional_criteria is None:
+        if pokemon_id in self._fb_subscribers[s_id]['subscription'] and additional_criteria in (None, {}):
             return "u said"
 
         if pokemon_id not in self._fb_subscribers[s_id]['subscription']:
             self._fb_subscribers[s_id]['subscription'].append(pokemon_id)
-            ret_msg = 'sure bro'
+        ret_msg = 'sure bro'
         if additional_criteria:
             criteria = {}
             iv = additional_criteria.get('iv')
@@ -173,7 +179,7 @@ class PogomFb(Pogom):
                 criteria['iv'] = float(iv)
             except Exception as e:
                 criteria['iv'] = -1
-            ret_msg += ', u r asking iv over ' + criteria['iv']
+            ret_msg += ', u r asking iv over ' + str(criteria['iv'])
             mid1, mid2 = get_move_id(move1), get_move_id(move2)
             if mid1:
                 criteria['move1'] = mid1
@@ -189,7 +195,8 @@ class PogomFb(Pogom):
     def _unsubscribe_pokemon(self, s_id, pokemon_id):
         if pokemon_id in self._fb_subscribers[s_id]['subscription']:
             self._fb_subscribers[s_id]['subscription'].remove(pokemon_id)
-            self._fb_subscribers[s_id]['additional_criteria'].pop(pokemon_id)
+            if pokemon_id in self._fb_subscribers[s_id]['additional_criteria']:
+                self._fb_subscribers[s_id]['additional_criteria'].pop(pokemon_id)
             self._save_subscriber()
             return "If this is what you want..."
         else:
@@ -326,6 +333,3 @@ def fb_send_message(recipient_id, msg="", img_url="", img_tuple=None):
     else:
         msg_seg = msg
         _send()
-
-# msg = u"tell me about 迷你龍 if iv over 30 and move1 is Dragon Breath and move2 is Hydro Bump"
-# msg = u"tell Me about dratini if move1 is Dragon Breath and iv over 30"
