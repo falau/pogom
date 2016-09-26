@@ -43,6 +43,12 @@ def get_pokemon_id(pokemon_name):
     return get_pokemon_id.inv.get(unicode(pokemon_name), None)
 
 
+def get_move_id(move_name):
+    if not hasattr(get_move_id, 'inv'):
+        get_move_id.inv = {v.lower(): k for k, v in get_locale('moves').iteritems()}
+    return get_move_id.inv.get(unicode(move_name.lower()), None)
+
+
 def get_pokemon_names():
     return [get_pokemon_name(n) for n in xrange(1, 152)]
 
