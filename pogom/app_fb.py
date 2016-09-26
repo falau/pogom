@@ -102,7 +102,7 @@ class PogomFb(Pogom):
 
     def _generate_notify_msg(self, recipient, notify_list, found_pokemons):
         for m in found_pokemons:
-            if m["pokemon_id"] not in notify_list:
+            if str(m["pokemon_id"]) not in notify_list:
                 continue
 
             move_1, move_2 = m.get('move_1', ''), m.get('move_2', '')
@@ -112,7 +112,7 @@ class PogomFb(Pogom):
                 m.get('individual_stamina', 0)
             )
             iv = 100 * (atk + dfn + sta) / 45.0 if any((atk, dfn, sta)) else 0
-            if not self._is_criteria_matched(recipient, m["pokemon_id"], iv, move_1, move_2):
+            if not self._is_criteria_matched(recipient, str(m["pokemon_id"]), iv, move_1, move_2):
                 continue
             if m["encounter_id"] in self._fb_noti_history[recipient]:
                 continue
